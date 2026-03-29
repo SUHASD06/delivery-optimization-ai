@@ -1,0 +1,16 @@
+{
+  "phase": 1,
+  "episodes": 100,
+  "heuristic": {
+    "reward": 89.53,
+    "deliveries": 3.0,
+    "fuel": 13.26,
+    "steps": 4.0
+  },
+  "ppo": {
+    "reward": 90.46,
+    "deliveries": 3.0,
+    "fuel": 17.0,
+    "steps": 16.0
+  }
+}

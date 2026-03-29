@@ -1,0 +1,22 @@
+name: delivery-optimization-env
+description: >
+  RL environment for last-mile delivery optimization.
+  Agent navigates a 10x10 grid under dynamic traffic and fuel constraints
+  to complete all deliveries efficiently. Supports 3-phase curriculum
+  (deterministic → random → fully stochastic).
+
+entry_point: env.environment:DeliveryEnv
+
+observation_space: Box(11,) float32 [0, 1]
+action_space: Discrete(5)
+
+tasks:
+  - easy
+  - medium
+  - hard
+
+agent:
+  algorithm: PPO
+  framework: stable-baselines3
+  policy: MlpPolicy
+  architecture: [256, 256]

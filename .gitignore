@@ -1,0 +1,16 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.venv
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo

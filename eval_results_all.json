@@ -1,0 +1,50 @@
+{
+  "phase_1": {
+    "phase": 1,
+    "episodes": 100,
+    "heuristic": {
+      "reward": 89.53,
+      "deliveries": 3.0,
+      "fuel": 13.26,
+      "steps": 4.0
+    },
+    "ppo": {
+      "reward": 90.46,
+      "deliveries": 3.0,
+      "fuel": 17.0,
+      "steps": 16.0
+    }
+  },
+  "phase_2": {
+    "phase": 2,
+    "episodes": 100,
+    "heuristic": {
+      "reward": 77.26,
+      "deliveries": 2.63,
+      "fuel": 24.4,
+      "steps": 5.81
+    },
+    "ppo": {
+      "reward": 5.72,
+      "deliveries": 0.39,
+      "fuel": 16.09,
+      "steps": 12.05
+    }
+  },
+  "phase_3": {
+    "phase": 3,
+    "episodes": 100,
+    "heuristic": {
+      "reward": 54.01,
+      "deliveries": 2.06,
+      "fuel": 22.05,
+      "steps": 4.8
+    },
+    "ppo": {
+      "reward": 4.97,
+      "deliveries": 0.34,
+      "fuel": 15.91,
+      "steps": 9.6
+    }
+  }
+}
