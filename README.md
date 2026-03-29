@@ -1,3 +1,13 @@
+---
+title: Delivery Optimization AI
+emoji: 🚛
+colorFrom: green
+colorTo: blue
+sdk: gradio
+app_file: app.py
+pinned: false
+---
+
 # 🚀 AI-Driven Delivery Optimization System
 
 > **Reinforcement Learning agent that learns to optimize last-mile delivery routes under dynamic traffic and fuel constraints.**
