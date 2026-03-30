@@ -3,8 +3,7 @@ title: Delivery Optimization AI
 emoji: 🚛
 colorFrom: green
 colorTo: blue
-sdk: gradio
-app_file: app.py
+sdk: docker
 pinned: false
 ---
 
