@@ -50,13 +50,6 @@ class StepRequest(BaseModel):
 # ──────────────────────────────────────────────────────────────
 # OpenEnv API Endpoints (registered on FastAPI BEFORE Gradio mount)
 # ──────────────────────────────────────────────────────────────
-@fastapi_app.get("/")
-def root():
-    return {
-        "name": "delivery-optimization-env",
-        "description": "OpenEnv-compliant delivery optimization RL environment",
-        "endpoints": ["/reset", "/step", "/state", "/health"],
-    }
 
 
 @fastapi_app.get("/health")
@@ -432,20 +425,14 @@ trained to optimize delivery routes under dynamic traffic and fuel constraints.
 if __name__ == "__main__":
     gradio_app = create_app()
 
-    # Mount Gradio onto the FastAPI app (Gradio becomes a sub-app)
-    # This ensures the OpenEnv API routes are always accessible at the root
-    fastapi_app = gr.mount_gradio_app(fastapi_app, gradio_app, path="/ui")
-
-    # Also add a redirect from /ui to the Gradio interface for convenience
-    @fastapi_app.get("/ui")
-    def redirect_to_gradio():
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url="/ui/")
+    # Mount Gradio at root so HuggingFace Spaces shows the UI
+    # API routes (/reset, /step, /state, /health) registered above take priority
+    fastapi_app = gr.mount_gradio_app(fastapi_app, gradio_app, path="/")
 
     print("=" * 60)
     print("  Delivery Optimization OpenEnv Server")
     print("  API endpoints: /reset, /step, /state, /health")
-    print("  Gradio UI:     /ui")
+    print("  Gradio UI:     /")
     print("  Docs:          /docs")
     print("=" * 60)
 
