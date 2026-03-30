@@ -50,9 +50,18 @@ class DeliveryEnv(gym.Env):
 
     metadata = {"render_modes": ["human", "ansi"]}
 
-    def __init__(self, phase=1, render_mode=None):
+    def __init__(self, phase=1, task=None, render_mode=None, **kwargs):
         super().__init__()
         self.phase = phase
+        
+        # Map OpenEnv standard task names to internal phases
+        if task == "easy":
+            self.phase = 1
+        elif task == "medium":
+            self.phase = 2
+        elif task == "hard":
+            self.phase = 3
+            
         self.render_mode = render_mode
 
         # 11-dim normalized state [0, 1]
