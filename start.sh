@@ -1,6 +1,3 @@
 #!/bin/bash
-# Start OpenEnv-compliant HTTP server (for hackathon automated evaluator)
-python server.py &
-
-# Start Gradio UI (for human judges)
+# Start the unified server (OpenEnv API + Gradio UI on port 7860)
 python app.py

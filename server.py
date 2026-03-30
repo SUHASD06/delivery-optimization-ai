@@ -1,10 +1,13 @@
 """
 OpenEnv-compliant HTTP server for the Delivery Optimization environment.
 Exposes standard endpoints: POST /reset, POST /step, GET /state
-This is required by the Scaler Meta PyTorch Hackathon automated evaluator.
+
+Standalone server on port 8000 (for local testing).
+In production, use app.py which serves both API and Gradio UI on port 7860.
 """
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Any, Dict
 from env.environment import DeliveryEnv
@@ -31,29 +34,6 @@ class StepRequest(BaseModel):
     action: int  # 0=up, 1=down, 2=left, 3=right, 4=refuel
 
 
-class ResetResponse(BaseModel):
-    observation: list
-    info: dict
-
-
-class StepResponse(BaseModel):
-    observation: list
-    reward: float
-    terminated: bool
-    truncated: bool
-    done: bool
-    info: dict
-
-
-class StateResponse(BaseModel):
-    location: list
-    fuel: float
-    time_elapsed: float
-    pending_deliveries: list
-    deadlines: list
-    steps_taken: int
-
-
 # --- Endpoints ---
 
 @app.get("/")
@@ -70,7 +50,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/reset", response_model=ResetResponse)
+@app.post("/reset")
 def reset(request: ResetRequest = None):
     global env
 
@@ -84,13 +64,13 @@ def reset(request: ResetRequest = None):
     seed = request.seed if request else None
     obs, info = env.reset(seed=seed)
 
-    return ResetResponse(
-        observation=obs.tolist(),
-        info=info,
-    )
+    return JSONResponse(content={
+        "observation": obs.tolist(),
+        "info": info,
+    })
 
 
-@app.post("/step", response_model=StepResponse)
+@app.post("/step")
 def step(request: StepRequest):
     global env
 
@@ -101,17 +81,17 @@ def step(request: StepRequest):
 
     obs, reward, terminated, truncated, info = env.step(request.action)
 
-    return StepResponse(
-        observation=obs.tolist(),
-        reward=float(reward),
-        terminated=bool(terminated),
-        truncated=bool(truncated),
-        done=bool(terminated or truncated),
-        info=info,
-    )
+    return JSONResponse(content={
+        "observation": obs.tolist(),
+        "reward": float(reward),
+        "terminated": bool(terminated),
+        "truncated": bool(truncated),
+        "done": bool(terminated or truncated),
+        "info": info,
+    })
 
 
-@app.get("/state", response_model=StateResponse)
+@app.get("/state")
 def state():
     global env
 
@@ -120,14 +100,14 @@ def state():
         env.reset()
 
     s = env.state()
-    return StateResponse(
-        location=list(s["location"]),
-        fuel=float(s["fuel"]),
-        time_elapsed=float(s["time"]),
-        pending_deliveries=[list(d) for d in s["pending"]],
-        deadlines=list(s["deadlines"]),
-        steps_taken=int(env.steps_taken),
-    )
+    return JSONResponse(content={
+        "location": list(s["location"]),
+        "fuel": float(s["fuel"]),
+        "time_elapsed": float(s["time"]),
+        "pending_deliveries": [list(d) for d in s["pending"]],
+        "deadlines": list(s["deadlines"]),
+        "steps_taken": int(env.steps_taken),
+    })
 
 
 if __name__ == "__main__":

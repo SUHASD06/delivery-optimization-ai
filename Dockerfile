@@ -15,10 +15,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 7860
-EXPOSE 8000
 
 # Make start script executable
 RUN chmod +x start.sh
 
-# Launch both OpenEnv API server and Gradio UI
+# Launch unified server (OpenEnv API + Gradio UI on port 7860)
 CMD ["bash", "start.sh"]

@@ -18,12 +18,22 @@ from matplotlib.colors import LinearSegmentedColormap
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
 import gradio as gr
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+import uvicorn
 from env.environment import DeliveryEnv, GRID_SIZE, FUEL_STATIONS
 from agent.baseline import choose_best
 
 # ──────────────────────────────────────────────────────────────
-# Global environment instance for OpenEnv API
+# FastAPI app FIRST — this is the main ASGI app
 # ──────────────────────────────────────────────────────────────
+fastapi_app = FastAPI(
+    title="Delivery Optimization OpenEnv",
+    description="OpenEnv-compliant RL environment for last-mile delivery optimization.",
+    version="1.0.0",
+)
+
+# Global environment instance for OpenEnv API
 _api_env: Optional[DeliveryEnv] = None
 
 
@@ -35,6 +45,69 @@ class ResetRequest(BaseModel):
 
 class StepRequest(BaseModel):
     action: int  # 0=up, 1=down, 2=left, 3=right, 4=refuel
+
+
+# ──────────────────────────────────────────────────────────────
+# OpenEnv API Endpoints (registered on FastAPI BEFORE Gradio mount)
+# ──────────────────────────────────────────────────────────────
+@fastapi_app.get("/")
+def root():
+    return {
+        "name": "delivery-optimization-env",
+        "description": "OpenEnv-compliant delivery optimization RL environment",
+        "endpoints": ["/reset", "/step", "/state", "/health"],
+    }
+
+
+@fastapi_app.get("/health")
+def health():
+    return {"status": "ok", "env": "delivery-optimization"}
+
+
+@fastapi_app.post("/reset")
+def api_reset(request: ResetRequest = None):
+    global _api_env
+    phase = 1
+    if request and request.task:
+        phase = {"easy": 1, "medium": 2, "hard": 3}.get(request.task, 1)
+    _api_env = DeliveryEnv(phase=phase)
+    seed = request.seed if request else None
+    obs, info = _api_env.reset(seed=seed)
+    return JSONResponse(content={"observation": obs.tolist(), "info": info})
+
+
+@fastapi_app.post("/step")
+def api_step(request: StepRequest):
+    global _api_env
+    if _api_env is None:
+        _api_env = DeliveryEnv(phase=1)
+        _api_env.reset()
+    obs, reward, terminated, truncated, info = _api_env.step(request.action)
+    return JSONResponse(content={
+        "observation": obs.tolist(),
+        "reward": float(reward),
+        "terminated": bool(terminated),
+        "truncated": bool(truncated),
+        "done": bool(terminated or truncated),
+        "info": info,
+    })
+
+
+@fastapi_app.get("/state")
+def api_state():
+    global _api_env
+    if _api_env is None:
+        _api_env = DeliveryEnv(phase=1)
+        _api_env.reset()
+    s = _api_env.state()
+    return JSONResponse(content={
+        "location": list(s["location"]),
+        "fuel": float(s["fuel"]),
+        "time_elapsed": float(s["time"]),
+        "pending_deliveries": [list(d) for d in s["pending"]],
+        "deadlines": list(s["deadlines"]),
+        "steps_taken": int(_api_env.steps_taken),
+    })
 
 
 # ──────────────────────────────────────────────────────────────
@@ -179,12 +252,12 @@ def compare_agents(phase):
     if p_env is not None:
         p_fig = render_grid(p_env, p_path, f"PPO Agent (Phase {phase})")
     else:
-        p_fig, ax = plt.subplots(figsize=(7, 7))
-        ax.text(0.5, 0.5, f"PPO model not found\nTrain first:\npython train_ppo.py --phase {phase}",
+        p_fig, pax = plt.subplots(figsize=(7, 7))
+        pax.text(0.5, 0.5, f"PPO model not found\nTrain first:\npython train_ppo.py --phase {phase}",
                 ha="center", va="center", fontsize=14, color="#ff6b6b",
-                transform=ax.transAxes)
-        ax.set_facecolor("#0f0f23")
-        fig.patch.set_facecolor("#0f0f23")
+                transform=pax.transAxes)
+        pax.set_facecolor("#0f0f23")
+        p_fig.patch.set_facecolor("#0f0f23")
 
     # Build metrics table
     h_del = h_info.get("deliveries_completed", 0)
@@ -359,55 +432,21 @@ trained to optimize delivery routes under dynamic traffic and fuel constraints.
 if __name__ == "__main__":
     gradio_app = create_app()
 
-    # ── Mount OpenEnv API routes on the underlying FastAPI app ──
-    # Scaler's hackathon evaluator does POST /reset on the HuggingFace URL
-    fastapi_app = gradio_app.app
+    # Mount Gradio onto the FastAPI app (Gradio becomes a sub-app)
+    # This ensures the OpenEnv API routes are always accessible at the root
+    fastapi_app = gr.mount_gradio_app(fastapi_app, gradio_app, path="/ui")
 
-    @fastapi_app.get("/health")
-    def health():
-        return {"status": "ok", "env": "delivery-optimization"}
+    # Also add a redirect from /ui to the Gradio interface for convenience
+    @fastapi_app.get("/ui")
+    def redirect_to_gradio():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/ui/")
 
-    @fastapi_app.post("/reset")
-    def api_reset(request: ResetRequest = None):
-        global _api_env
-        phase = 1
-        if request and request.task:
-            phase = {"easy": 1, "medium": 2, "hard": 3}.get(request.task, 1)
-        _api_env = DeliveryEnv(phase=phase)
-        seed = request.seed if request else None
-        obs, info = _api_env.reset(seed=seed)
-        return {"observation": obs.tolist(), "info": info}
+    print("=" * 60)
+    print("  Delivery Optimization OpenEnv Server")
+    print("  API endpoints: /reset, /step, /state, /health")
+    print("  Gradio UI:     /ui")
+    print("  Docs:          /docs")
+    print("=" * 60)
 
-    @fastapi_app.post("/step")
-    def api_step(request: StepRequest):
-        global _api_env
-        if _api_env is None:
-            _api_env = DeliveryEnv(phase=1)
-            _api_env.reset()
-        obs, reward, terminated, truncated, info = _api_env.step(request.action)
-        return {
-            "observation": obs.tolist(),
-            "reward": float(reward),
-            "terminated": bool(terminated),
-            "truncated": bool(truncated),
-            "done": bool(terminated or truncated),
-            "info": info,
-        }
-
-    @fastapi_app.get("/state")
-    def api_state():
-        global _api_env
-        if _api_env is None:
-            _api_env = DeliveryEnv(phase=1)
-            _api_env.reset()
-        s = _api_env.state()
-        return {
-            "location": list(s["location"]),
-            "fuel": float(s["fuel"]),
-            "time_elapsed": float(s["time"]),
-            "pending_deliveries": [list(d) for d in s["pending"]],
-            "deadlines": list(s["deadlines"]),
-            "steps_taken": int(_api_env.steps_taken),
-        }
-
-    gradio_app.launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=7860)

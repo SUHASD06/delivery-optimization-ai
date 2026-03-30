@@ -9,4 +9,5 @@ torch>=2.0.0
 Pillow>=10.0.0
 fastapi>=0.100.0
 uvicorn>=0.23.0
-openenv>=0.1.0
+openenv-core>=0.1.0
+requests>=2.25.0
