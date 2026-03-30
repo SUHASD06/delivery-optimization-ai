@@ -4,7 +4,7 @@ WORKDIR /app
 
 # System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ && \
+    gcc g++ bash && \
     rm -rf /var/lib/apt/lists/*
 
 # Python dependencies
@@ -20,5 +20,5 @@ EXPOSE 8000
 # Make start script executable
 RUN chmod +x start.sh
 
-# Launch both the OpenEnv API and the Gradio demo
-CMD ["./start.sh"]
+# Launch both OpenEnv API server and Gradio UI
+CMD ["bash", "start.sh"]
