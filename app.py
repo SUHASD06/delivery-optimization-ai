@@ -18,22 +18,12 @@ from matplotlib.colors import LinearSegmentedColormap
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
 import gradio as gr
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-import uvicorn
 from env.environment import DeliveryEnv, GRID_SIZE, FUEL_STATIONS
 from agent.baseline import choose_best
 
 # ──────────────────────────────────────────────────────────────
-# FastAPI app FIRST — this is the main ASGI app
-# ──────────────────────────────────────────────────────────────
-fastapi_app = FastAPI(
-    title="Delivery Optimization OpenEnv",
-    description="OpenEnv-compliant RL environment for last-mile delivery optimization.",
-    version="1.0.0",
-)
-
 # Global environment instance for OpenEnv API
+# ──────────────────────────────────────────────────────────────
 _api_env: Optional[DeliveryEnv] = None
 
 
@@ -46,61 +36,6 @@ class ResetRequest(BaseModel):
 class StepRequest(BaseModel):
     action: int  # 0=up, 1=down, 2=left, 3=right, 4=refuel
 
-
-# ──────────────────────────────────────────────────────────────
-# OpenEnv API Endpoints (registered on FastAPI BEFORE Gradio mount)
-# ──────────────────────────────────────────────────────────────
-
-
-@fastapi_app.get("/health")
-def health():
-    return {"status": "ok", "env": "delivery-optimization"}
-
-
-@fastapi_app.post("/reset")
-def api_reset(request: ResetRequest = None):
-    global _api_env
-    phase = 1
-    if request and request.task:
-        phase = {"easy": 1, "medium": 2, "hard": 3}.get(request.task, 1)
-    _api_env = DeliveryEnv(phase=phase)
-    seed = request.seed if request else None
-    obs, info = _api_env.reset(seed=seed)
-    return JSONResponse(content={"observation": obs.tolist(), "info": info})
-
-
-@fastapi_app.post("/step")
-def api_step(request: StepRequest):
-    global _api_env
-    if _api_env is None:
-        _api_env = DeliveryEnv(phase=1)
-        _api_env.reset()
-    obs, reward, terminated, truncated, info = _api_env.step(request.action)
-    return JSONResponse(content={
-        "observation": obs.tolist(),
-        "reward": float(reward),
-        "terminated": bool(terminated),
-        "truncated": bool(truncated),
-        "done": bool(terminated or truncated),
-        "info": info,
-    })
-
-
-@fastapi_app.get("/state")
-def api_state():
-    global _api_env
-    if _api_env is None:
-        _api_env = DeliveryEnv(phase=1)
-        _api_env.reset()
-    s = _api_env.state()
-    return JSONResponse(content={
-        "location": list(s["location"]),
-        "fuel": float(s["fuel"]),
-        "time_elapsed": float(s["time"]),
-        "pending_deliveries": [list(d) for d in s["pending"]],
-        "deadlines": list(s["deadlines"]),
-        "steps_taken": int(_api_env.steps_taken),
-    })
 
 
 # ──────────────────────────────────────────────────────────────
@@ -425,15 +360,62 @@ trained to optimize delivery routes under dynamic traffic and fuel constraints.
 if __name__ == "__main__":
     gradio_app = create_app()
 
-    # Mount Gradio at root so HuggingFace Spaces shows the UI
-    # API routes (/reset, /step, /state, /health) registered above take priority
-    fastapi_app = gr.mount_gradio_app(fastapi_app, gradio_app, path="/")
+    # Get Gradio's underlying FastAPI app and add OpenEnv API routes to it
+    # This is the recommended approach for HuggingFace Spaces
+    underlying_app = gradio_app.app
+
+    @underlying_app.get("/health")
+    def hf_health():
+        return {"status": "ok", "env": "delivery-optimization"}
+
+    @underlying_app.post("/reset")
+    def hf_reset(request: ResetRequest = None):
+        global _api_env
+        phase = 1
+        if request and request.task:
+            phase = {"easy": 1, "medium": 2, "hard": 3}.get(request.task, 1)
+        _api_env = DeliveryEnv(phase=phase)
+        seed = request.seed if request else None
+        obs, info = _api_env.reset(seed=seed)
+        return {"observation": obs.tolist(), "info": info}
+
+    @underlying_app.post("/step")
+    def hf_step(request: StepRequest):
+        global _api_env
+        if _api_env is None:
+            _api_env = DeliveryEnv(phase=1)
+            _api_env.reset()
+        obs, reward, terminated, truncated, info = _api_env.step(request.action)
+        return {
+            "observation": obs.tolist(),
+            "reward": float(reward),
+            "terminated": bool(terminated),
+            "truncated": bool(truncated),
+            "done": bool(terminated or truncated),
+            "info": info,
+        }
+
+    @underlying_app.get("/state")
+    def hf_state():
+        global _api_env
+        if _api_env is None:
+            _api_env = DeliveryEnv(phase=1)
+            _api_env.reset()
+        s = _api_env.state()
+        return {
+            "location": list(s["location"]),
+            "fuel": float(s["fuel"]),
+            "time_elapsed": float(s["time"]),
+            "pending_deliveries": [list(d) for d in s["pending"]],
+            "deadlines": list(s["deadlines"]),
+            "steps_taken": int(_api_env.steps_taken),
+        }
 
     print("=" * 60)
     print("  Delivery Optimization OpenEnv Server")
     print("  API endpoints: /reset, /step, /state, /health")
     print("  Gradio UI:     /")
-    print("  Docs:          /docs")
     print("=" * 60)
 
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=7860)
+    gradio_app.launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
+
