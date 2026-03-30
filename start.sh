@@ -1,3 +1,4 @@
 #!/bin/bash
-# Start the unified server (OpenEnv API + Gradio UI on port 7860)
-python app.py
+# Start the unified server using uvicorn
+# This loads app.py at module level, registering both API routes and Gradio UI
+uvicorn app:app --host 0.0.0.0 --port 7860
