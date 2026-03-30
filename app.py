@@ -1,6 +1,8 @@
 """
 AI Delivery Optimization — Interactive Demo
 Rich Gradio interface with visual grid, agent comparison, and metrics dashboard.
+Also serves OpenEnv-compliant API endpoints (/reset, /step, /state) for
+the Scaler Meta PyTorch Hackathon automated evaluator.
 
 Run:  python app.py
 """
@@ -13,9 +15,26 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import LinearSegmentedColormap
+from typing import Optional, Dict, Any
+from pydantic import BaseModel
 import gradio as gr
 from env.environment import DeliveryEnv, GRID_SIZE, FUEL_STATIONS
 from agent.baseline import choose_best
+
+# ──────────────────────────────────────────────────────────────
+# Global environment instance for OpenEnv API
+# ──────────────────────────────────────────────────────────────
+_api_env: Optional[DeliveryEnv] = None
+
+
+class ResetRequest(BaseModel):
+    seed: Optional[int] = None
+    options: Optional[Dict[str, Any]] = None
+    task: Optional[str] = None  # "easy", "medium", "hard"
+
+
+class StepRequest(BaseModel):
+    action: int  # 0=up, 1=down, 2=left, 3=right, 4=refuel
 
 
 # ──────────────────────────────────────────────────────────────
@@ -338,5 +357,57 @@ trained to optimize delivery routes under dynamic traffic and fuel constraints.
 
 
 if __name__ == "__main__":
-    app = create_app()
-    app.launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
+    gradio_app = create_app()
+
+    # ── Mount OpenEnv API routes on the underlying FastAPI app ──
+    # Scaler's hackathon evaluator does POST /reset on the HuggingFace URL
+    fastapi_app = gradio_app.app
+
+    @fastapi_app.get("/health")
+    def health():
+        return {"status": "ok", "env": "delivery-optimization"}
+
+    @fastapi_app.post("/reset")
+    def api_reset(request: ResetRequest = None):
+        global _api_env
+        phase = 1
+        if request and request.task:
+            phase = {"easy": 1, "medium": 2, "hard": 3}.get(request.task, 1)
+        _api_env = DeliveryEnv(phase=phase)
+        seed = request.seed if request else None
+        obs, info = _api_env.reset(seed=seed)
+        return {"observation": obs.tolist(), "info": info}
+
+    @fastapi_app.post("/step")
+    def api_step(request: StepRequest):
+        global _api_env
+        if _api_env is None:
+            _api_env = DeliveryEnv(phase=1)
+            _api_env.reset()
+        obs, reward, terminated, truncated, info = _api_env.step(request.action)
+        return {
+            "observation": obs.tolist(),
+            "reward": float(reward),
+            "terminated": bool(terminated),
+            "truncated": bool(truncated),
+            "done": bool(terminated or truncated),
+            "info": info,
+        }
+
+    @fastapi_app.get("/state")
+    def api_state():
+        global _api_env
+        if _api_env is None:
+            _api_env = DeliveryEnv(phase=1)
+            _api_env.reset()
+        s = _api_env.state()
+        return {
+            "location": list(s["location"]),
+            "fuel": float(s["fuel"]),
+            "time_elapsed": float(s["time"]),
+            "pending_deliveries": [list(d) for d in s["pending"]],
+            "deadlines": list(s["deadlines"]),
+            "steps_taken": int(_api_env.steps_taken),
+        }
+
+    gradio_app.launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
