@@ -15,6 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 7860
+EXPOSE 8000
 
-# Launch the Gradio demo
-CMD ["python", "app.py"]
+# Make start script executable
+RUN chmod +x start.sh
+
+# Launch both the OpenEnv API and the Gradio demo
+CMD ["./start.sh"]
