@@ -3,6 +3,7 @@ stable-baselines3[extra]>=2.1.0
 numpy>=1.24.0
 pandas>=2.0.0
 matplotlib>=3.7.0
+folium>=0.14.0
 gradio>=4.0.0
 pydantic>=2.0.0
 torch>=2.0.0

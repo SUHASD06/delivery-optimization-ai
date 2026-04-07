@@ -10,8 +10,8 @@ import os
 import io
 import json
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
+import folium
+from typing import Optional, Dict, Any
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import LinearSegmentedColormap
@@ -23,6 +23,18 @@ from fastapi.responses import JSONResponse
 import uvicorn
 from env.environment import DeliveryEnv, GRID_SIZE, FUEL_STATIONS
 from agent.baseline import choose_best
+
+# ──────────────────────────────────────────────────────────────
+# Grid to Real-world GPS mapping
+# ──────────────────────────────────────────────────────────────
+LAT_MIN, LAT_MAX = 34.020, 34.090  # Culver City to Hollywood roughly
+LON_MIN, LON_MAX = -118.420, -118.320 # Santa Monica to K-Town roughly
+
+def grid_to_latlon(x, y):
+    # Map (0..9) grid to realistic Lat/Lon bounding box
+    lon = LON_MIN + (x / (GRID_SIZE - 1)) * (LON_MAX - LON_MIN)
+    lat = LAT_MIN + (y / (GRID_SIZE - 1)) * (LAT_MAX - LAT_MIN)
+    return lat, lon
 
 # ──────────────────────────────────────────────────────────────
 # Global environment instance for OpenEnv API
@@ -43,76 +55,109 @@ class StepRequest(BaseModel):
 # ──────────────────────────────────────────────────────────────
 # Grid Visualization
 # ──────────────────────────────────────────────────────────────
-def render_grid(env, path_history, title="Delivery Simulation", step_idx=None):
-    """Render the grid as a matplotlib figure."""
-    fig, ax = plt.subplots(1, 1, figsize=(7, 7))
+def render_map(env, path_history, title="Delivery Simulation", total_reward=0, info=None, ppo_not_found=False):
+    """Render a realistic leafleat map using Folium."""
+    if ppo_not_found:
+        return f"""
+        <div style="background-color: #1a1a1e; padding: 40px; border-radius: 12px; text-align: center;">
+            <h3 style="color: #ff4444; font-family: monospace;">PPO Model Not Found</h3>
+            <p style="color: #888;">Train the PPO agent first to see results here.</p>
+        </div>
+        """
 
-    # Traffic heatmap background
-    traffic = np.array(env.traffic_map, dtype=float).T  # transpose for x/y
-    cmap = LinearSegmentedColormap.from_list("traffic", ["#1a1a2e", "#16213e", "#e94560"])
-    ax.imshow(traffic, origin="lower", cmap=cmap, alpha=0.3,
-              extent=(-0.5, GRID_SIZE - 0.5, -0.5, GRID_SIZE - 0.5))
+    info = info or {}
+    del_count = info.get("deliveries_completed", 0)
+    fuel_used = info.get("fuel_used", 0)
 
-    # Grid lines
-    for i in range(GRID_SIZE + 1):
-        ax.axhline(i - 0.5, color="#333", linewidth=0.5, alpha=0.3)
-        ax.axvline(i - 0.5, color="#333", linewidth=0.5, alpha=0.3)
+    center_lat = (LAT_MIN + LAT_MAX) / 2
+    center_lon = (LON_MIN + LON_MAX) / 2
 
-    # Fuel stations
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=14, tiles="CartoDB dark_matter")
+
+    # Helper function to snap path to real roads using OSRM
+    def get_road_route(points):
+        if not points or len(points) < 2: return points
+        import requests
+        # OSRM expects lon,lat format
+        coords = ";".join([f"{lon:.5f},{lat:.5f}" for lat, lon in points])
+        url = f"http://router.project-osrm.org/route/v1/driving/{coords}?overview=full&geometries=geojson"
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("code") == "Ok":
+                    # GeoJSON is [lon, lat], folium needs [lat, lon]
+                    route = data["routes"][0]["geometry"]["coordinates"]
+                    return [[lat, lon] for lon, lat in route]
+        except Exception as e:
+            print("OSRM Routing failed, using straight lines:", e)
+        return points
+
+    # Path history — plot agent steps and connections
+    if path_history:
+        raw_latlons = [grid_to_latlon(px, py) for px, py in path_history]
+        
+        # Split into chunks of 50 to avoid any OSRM URL length limits if the path is very long
+        route_latlons = []
+        for i in range(0, len(raw_latlons), 50):
+            chunk = raw_latlons[i:i+51] # overlap by 1 to connect
+            route_latlons.extend(get_road_route(chunk))
+            
+        # A* style yellow line snapped to roads
+        folium.PolyLine(route_latlons, color="#ffd93d", weight=5, opacity=0.9).add_to(m)
+        
+        # Blue visited nodes (original logic points)
+        for lat, lon in raw_latlons:
+            folium.CircleMarker([lat, lon], radius=2, color="#0088ff", fill=True, fillOpacity=0.7).add_to(m)
+
+    # Fuel stations (Red Pins)
     for fx, fy in env.fuel_stations:
-        ax.plot(fx, fy, "s", color="#00d2ff", markersize=18, markeredgecolor="white",
-                markeredgewidth=2, zorder=5)
-        ax.text(fx, fy, "⛽", ha="center", va="center", fontsize=12, zorder=6)
+        flat, flon = grid_to_latlon(fx, fy)
+        folium.Marker([flat, flon], icon=folium.Icon(color="darkred", icon="tint", prefix="fa")).add_to(m)
 
-    # Pending deliveries
-    for i, (dx, dy) in enumerate(env.pending_deliveries):
-        ax.plot(dx, dy, "D", color="#ff6b6b", markersize=16, markeredgecolor="white",
-                markeredgewidth=2, zorder=5)
-        ax.text(dx, dy, f"📦", ha="center", va="center", fontsize=11, zorder=6)
+    # Pending deliveries (Blue Pins)
+    for dx, dy in env.pending_deliveries:
+        dlat, dlon = grid_to_latlon(dx, dy)
+        folium.Marker([dlat, dlon], icon=folium.Icon(color="darkblue", icon="gift", prefix="fa")).add_to(m)
 
-    # Path history
-    if path_history and len(path_history) > 1:
-        display_path = path_history[:step_idx + 1] if step_idx is not None else path_history
-        px = [p[0] for p in display_path]
-        py = [p[1] for p in display_path]
-        ax.plot(px, py, "-", color="#ffd93d", linewidth=2.5, alpha=0.7, zorder=3)
-        ax.plot(px, py, "o", color="#ffd93d", markersize=5, alpha=0.5, zorder=3)
+    # Start location (Green pin)
+    if path_history:
+        sx, sy = path_history[0]
+        slat, slon = grid_to_latlon(sx, sy)
+        folium.Marker([slat, slon], icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
 
-    # Agent current position
-    ax_pos, ay_pos = env.current_location
-    ax.plot(ax_pos, ay_pos, "o", color="#6bcb77", markersize=22, markeredgecolor="white",
-            markeredgewidth=3, zorder=7)
-    ax.text(ax_pos, ay_pos, "🚛", ha="center", va="center", fontsize=14, zorder=8)
+    # Target/Current Location (Red/Black pin)
+    ax, ay = env.current_location
+    alat, alon = grid_to_latlon(ax, ay)
+    folium.Marker([alat, alon], icon=folium.Icon(color="red", icon="truck", prefix="fa")).add_to(m)
 
-    ax.set_xlim(-0.5, GRID_SIZE - 0.5)
-    ax.set_ylim(-0.5, GRID_SIZE - 0.5)
-    ax.set_xticks(range(GRID_SIZE))
-    ax.set_yticks(range(GRID_SIZE))
-    ax.set_facecolor("#0f0f23")
-    fig.patch.set_facecolor("#0f0f23")
-    ax.tick_params(colors="#aaa", labelsize=9)
-    ax.set_title(title, color="white", fontsize=14, fontweight="bold", pad=12)
+    map_html = m._repr_html_()
 
-    # Info box
-    info_text = (f"Fuel: {env.fuel:.1f}/{env.max_fuel:.0f}  |  "
-                 f"Delivered: {env.deliveries_completed}/{env.deliveries_completed + len(env.pending_deliveries)}  |  "
-                 f"Steps: {env.steps_taken}")
-    ax.text(GRID_SIZE / 2, -1.2, info_text, ha="center", va="center",
-            color="#ddd", fontsize=11, bbox=dict(boxstyle="round,pad=0.4",
-            facecolor="#1a1a2e", edgecolor="#444", alpha=0.9))
-
-    # Legend
-    legend_elements = [
-        mpatches.Patch(facecolor="#6bcb77", edgecolor="white", label="Agent 🚛"),
-        mpatches.Patch(facecolor="#ff6b6b", edgecolor="white", label="Deliveries 📦"),
-        mpatches.Patch(facecolor="#00d2ff", edgecolor="white", label="Fuel Stations ⛽"),
-        mpatches.Patch(facecolor="#ffd93d", edgecolor="white", label="Path Taken"),
-    ]
-    ax.legend(handles=legend_elements, loc="upper right", fontsize=9,
-              facecolor="#1a1a2e", edgecolor="#444", labelcolor="white")
-
-    fig.tight_layout()
-    return fig
+    html = f"""
+    <div style="background-color: #1a1a1e; padding: 20px; border-radius: 12px; font-family: 'Inter', sans-serif;">
+        <h3 style="color: #ffffff; text-align: center; font-weight: bold; margin-bottom: 20px; font-family: monospace;">{title}</h3>
+        
+        <div style="display: flex; justify-content: space-around; background-color: #242429; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+            <div style="text-align: center;">
+                <p style="color: #888; font-size: 11px; margin: 0 0 5px 0; font-weight: bold; letter-spacing: 1px;">DELIVERIES</p>
+                <p style="color: #0088ff; font-size: 18px; margin: 0; font-weight: bold;">{del_count}/3</p>
+            </div>
+            <div style="text-align: center;">
+                <p style="color: #888; font-size: 11px; margin: 0 0 5px 0; font-weight: bold; letter-spacing: 1px;">FUEL USED</p>
+                <p style="color: #0088ff; font-size: 18px; margin: 0; font-weight: bold;">{fuel_used:.1f}</p>
+            </div>
+            <div style="text-align: center;">
+                <p style="color: #888; font-size: 11px; margin: 0 0 5px 0; font-weight: bold; letter-spacing: 1px;">TOTAL REWARD</p>
+                <p style="color: #0088ff; font-size: 18px; margin: 0; font-weight: bold;">{total_reward:.1f}</p>
+            </div>
+        </div>
+        
+        <div style="border-radius: 8px; overflow: hidden; border: 1px solid #333; height: 400px;">
+            {{MAP_PLACEHOLDER}}
+        </div>
+    </div>
+    """
+    return html.replace("{MAP_PLACEHOLDER}", map_html)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -175,19 +220,14 @@ def compare_agents(phase):
 
     # Run heuristic
     h_env, h_path, h_reward, h_info = run_heuristic_agent(phase)
-    h_fig = render_grid(h_env, h_path, f"Heuristic Baseline (Phase {phase})")
+    h_html = render_map(h_env, h_path, f"Heuristic Baseline (Phase {phase})", h_reward, h_info)
 
     # Run PPO
     p_env, p_path, p_reward, p_info = run_ppo_agent(phase)
     if p_env is not None:
-        p_fig = render_grid(p_env, p_path, f"PPO Agent (Phase {phase})")
+        p_html = render_map(p_env, p_path, f"PPO Agent (Phase {phase})", p_reward, p_info)
     else:
-        p_fig, pax = plt.subplots(figsize=(7, 7))
-        pax.text(0.5, 0.5, f"PPO model not found\nTrain first:\npython train_ppo.py --phase {phase}",
-                ha="center", va="center", fontsize=14, color="#ff6b6b",
-                transform=pax.transAxes)
-        pax.set_facecolor("#0f0f23")
-        p_fig.patch.set_facecolor("#0f0f23")
+        p_html = render_map(None, None, f"PPO Agent (Phase {phase})", ppo_not_found=True)
 
     # Build metrics table
     h_del = h_info.get("deliveries_completed", 0)
@@ -220,7 +260,7 @@ def compare_agents(phase):
     else:
         comparison_md += "### 📈 PPO agent is learning — try more training steps"
 
-    return h_fig, p_fig, comparison_md
+    return h_html, p_html, comparison_md
 
 
 def run_single_demo(phase, agent_type):
@@ -232,14 +272,9 @@ def run_single_demo(phase, agent_type):
     else:
         env, path, total_reward, info = run_ppo_agent(phase)
         if env is None:
-            fig, ax = plt.subplots(figsize=(7, 7))
-            ax.text(0.5, 0.5, "PPO model not found", ha="center", va="center",
-                    fontsize=14, color="#ff6b6b", transform=ax.transAxes)
-            ax.set_facecolor("#0f0f23")
-            fig.patch.set_facecolor("#0f0f23")
-            return fig, "PPO model not found. Train first."
+            return render_map(None, None, f"{agent_type} (Phase {phase})", ppo_not_found=True), "PPO model not found. Train first."
 
-    fig = render_grid(env, path, f"{agent_type} — Phase {phase}")
+    html = render_map(env, path, f"{agent_type} — Phase {phase}", total_reward, info)
 
     report = f"""## 📋 Episode Report — {agent_type}
 
@@ -254,7 +289,7 @@ def run_single_demo(phase, agent_type):
 
 {'✅ All deliveries completed!' if info.get('deliveries_completed', 0) >= 3 else '⚠️ Some deliveries remaining'}
 """
-    return fig, report
+    return html, report
 
 
 # ──────────────────────────────────────────────────────────────
@@ -291,14 +326,14 @@ trained to optimize delivery routes under dynamic traffic and fuel constraints.
                     compare_btn = gr.Button("⚡ Run Comparison", variant="primary", size="lg")
 
                 with gr.Row():
-                    heuristic_plot = gr.Plot(label="🧠 Heuristic Baseline")
-                    ppo_plot = gr.Plot(label="🤖 PPO Agent")
+                    heuristic_html = gr.HTML()
+                    ppo_html = gr.HTML()
 
                 comparison_md = gr.Markdown()
                 compare_btn.click(
                     fn=compare_agents,
                     inputs=[phase_select],
-                    outputs=[heuristic_plot, ppo_plot, comparison_md]
+                    outputs=[heuristic_html, ppo_html, comparison_md]
                 )
 
             # ---- Tab 2: Single Agent Demo ----
@@ -317,12 +352,12 @@ trained to optimize delivery routes under dynamic traffic and fuel constraints.
                     )
                     demo_btn = gr.Button("▶️ Run Demo", variant="primary", size="lg")
 
-                demo_plot = gr.Plot(label="Agent Trajectory")
+                demo_html = gr.HTML()
                 demo_report = gr.Markdown()
                 demo_btn.click(
                     fn=run_single_demo,
                     inputs=[demo_phase, demo_agent],
-                    outputs=[demo_plot, demo_report]
+                    outputs=[demo_html, demo_report]
                 )
 
             # ---- Tab 3: About ----
@@ -430,6 +465,6 @@ if __name__ == "__main__":
     print("=" * 60)
     print("  Delivery Optimization OpenEnv Server")
     print("  API: /reset, /step, /state, /health")
-    print("  UI:  /")
+    print("  UI:  http://127.0.0.1:7860")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=7860)
